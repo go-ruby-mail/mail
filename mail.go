@@ -9,16 +9,6 @@
 // attachments, and base64 / quoted-printable transfer encodings) — all without
 // any Ruby runtime.
 //
-// # What it is — and isn't
-//
-// Parsing and generating the on-the-wire representation of a message is fully
-// deterministic and interpreter-independent, so it lives here as pure Go.
-// *Delivery* — actually sending over SMTP or fetching over IMAP/POP — is a host
-// seam: the go-ruby ecosystem provides those protocol libraries
-// (go-ruby-net-smtp / go-ruby-net-imap / go-ruby-net-pop), and a host such as
-// go-embedded-ruby wires this message model to them. This package produces and
-// consumes the bytes; it never opens a socket.
-//
 // # API shape
 //
 // [New] parses a raw message (or, given a builder function, constructs one);
@@ -26,6 +16,17 @@
 // gem-faithful accessors From/To/Cc/Bcc/ReplyTo/Subject/Body/Date/MessageID and
 // the MIME view Parts/Attachments/Multipart/ContentType, plus [Message.Encoded]
 // / [Message.String] to serialise it back.
+//
+// # Delivery and retrieval
+//
+// Sending and fetching are implemented here too, mirroring the gem's delivery
+// and retriever methods: configure them with [Defaults] and send with
+// [Message.Deliver], or fetch with [Find] / [First] / [Last] / [All]. The
+// delivery methods are [SMTP] (net/smtp, with STARTTLS/implicit-TLS and PLAIN/
+// LOGIN/CRAM-MD5 auth), [Sendmail], [TestDelivery], [FileDelivery] and
+// [LoggerDelivery]; the retrievers are [POP3] and [IMAP], both pure-Go clients.
+// Every transport reaches its server through an injectable [Dialer] seam, so it
+// stays CGO-free and fully testable against in-process servers.
 package mail
 
 import (

@@ -20,16 +20,14 @@ It is the message backend for
 [go-ruby-yaml](https://github.com/go-ruby-yaml/yaml) and
 [go-ruby-regexp](https://github.com/go-ruby-regexp/regexp).
 
-> **What it is — and isn't.** Parsing and generating the on-the-wire form of a
-> message (RFC 5322 grammar, MIME structure, transfer encodings) is fully
-> deterministic and needs **no interpreter**, so it lives here as pure Go.
-> *Delivery* — actually sending over SMTP or fetching over IMAP/POP — is a **host
-> seam**: the go-ruby ecosystem ships those protocol libraries
-> ([go-ruby-net-smtp](https://github.com/go-ruby-net-smtp/net-smtp),
-> [go-ruby-net-imap](https://github.com/go-ruby-net-imap/net-imap),
-> [go-ruby-net-pop](https://github.com/go-ruby-net-pop/net-pop)), and a host such
-> as go-embedded-ruby wires this message model to them. This package produces and
-> consumes the **bytes**; it never opens a socket.
+> **Parsing, generating _and_ delivery.** Parsing and generating the on-the-wire
+> form of a message (RFC 5322 grammar, MIME structure, transfer encodings) is
+> fully deterministic and needs **no interpreter**, so it lives here as pure Go.
+> **Delivery and retrieval** — sending over SMTP/sendmail and fetching over
+> POP3/IMAP — are implemented here too, in pure Go, mirroring the gem's delivery
+> and retriever methods. Every transport reaches its server through an injectable
+> dialer seam, so the package stays CGO-free and is driven in tests by in-process
+> SMTP/POP3/IMAP servers — never a real mail server.
 
 ## Features
 
@@ -51,6 +49,13 @@ every supported platform:
   quoted-printable / 7bit / 8bit.
 - **Generate** — `Encoded()` / `String()` re-emit the message, RFC 2047 encoding
   non-ASCII unstructured fields and folding long headers at 78 columns.
+- **Delivery** — the gem's delivery methods: `SMTP` (STARTTLS / implicit TLS,
+  PLAIN / LOGIN / CRAM-MD5 auth), `Sendmail`, `TestDelivery`, `FileDelivery` and
+  `LoggerDelivery`, plus the SMTP envelope (Return-Path / Sender / From sender,
+  To+Cc+Bcc recipients, Bcc stripped from the transmitted message).
+- **Retrieval** — POP3 and IMAP retrievers (`Find` / `First` / `Last` / `All`
+  with the gem's what/order/count selection; IMAP mailbox select/search/fetch),
+  both pure-Go clients over an injectable dialer seam.
 
 CGO-free, dependency-free, **100% test coverage**, `gofmt` + `go vet` clean, and
 green across the six 64-bit Go targets (amd64, arm64, riscv64, loong64, ppc64le,
@@ -132,6 +137,53 @@ type Body struct { Raw, Encoding string }
 type Field struct { Name, Value string }
 type Header struct { /* ordered fields + case-insensitive lookup */ }
 type Part = Message
+
+// Delivery (Mail.defaults { delivery_method … } / message.deliver)
+func Defaults(fn func(*Config))                     // configure delivery + retriever
+func (m *Message) Deliver() error                   // via the configured method
+func (m *Message) DeliverWith(d DeliveryMethod) error
+type DeliveryMethod interface { Deliver(m *Message) error }
+type SMTP struct { Address, Port, Domain, UserName, Password, Authentication,
+    OpenSSLVerifyMode string; EnableStartTLSAuto, SSL, TLS bool; Dial Dialer; … }
+type Sendmail struct { Location string; Arguments []string; Run … }
+type TestDelivery struct{ … }   // records deliveries, like Mail::TestMailer
+type FileDelivery struct{ Location, Extension string }
+type LoggerDelivery struct{ Logger Logger }
+type Dialer func(network, address string) (net.Conn, error) // the transport seam
+
+// Retrieval (retriever_method :pop3 / :imap ; Mail.find/first/last/all)
+func Find(opts FindOptions) ([]*Message, error)
+func First() (*Message, error); func Last() (*Message, error); func All() ([]*Message, error)
+type RetrieverMethod interface { Find(opts FindOptions) ([]*Message, error) }
+type POP3 struct { Address, UserName, Password string; Port int; EnableSSL bool; Dial Dialer; … }
+type IMAP struct { Address, UserName, Password string; Port int; EnableSSL, EnableStartTLS bool; Dial Dialer; … }
+```
+
+## Sending and retrieving
+
+```go
+// Configure a delivery method, then deliver (Mail.defaults + message.deliver).
+mail.Defaults(func(c *mail.Config) {
+    c.SetDeliveryMethod(&mail.SMTP{
+        Address: "smtp.example.com", Port: 587,
+        UserName: "me", Password: "secret", Authentication: "plain",
+        EnableStartTLSAuto: true,
+    })
+})
+msg := mail.New("", func(m *mail.Message) {
+    m.SetFrom("me@example.com").SetTo("you@example.com").
+        SetSubject("Hi").SetBody("Hello")
+})
+_ = msg.Deliver()
+
+// Retrieve over POP3 or IMAP (Mail.find/first/all).
+mail.Defaults(func(c *mail.Config) {
+    c.SetRetrieverMethod(&mail.IMAP{
+        Address: "imap.example.com", Port: 993, EnableSSL: true,
+        UserName: "me", Password: "secret",
+    })
+})
+inbox, _ := mail.All()
 ```
 
 ## Tests & coverage
@@ -144,6 +196,12 @@ parsed here and in the gem and the accessors compared, and a message built here
 is re-parsed by the gem. The oracle scripts `$stdout.binmode` so Windows
 text-mode never pollutes the bytes, and skip themselves where `ruby` / the gem is
 absent.
+
+Delivery and retrieval are driven by **in-process fake SMTP / POP3 / IMAP
+servers** reached through the injectable dialer seam — no real mail server is
+contacted — and the delivery path is additionally differential-tested against
+the gem: the same message is delivered to an in-process SMTP sink from both the
+gem and this package, and the envelope and DATA put on the wire are compared.
 
 ```sh
 COVERPKG=$(go list ./... | paste -sd, -)
@@ -160,7 +218,6 @@ Documented honestly for future work; none affect the corpus above:
   are.
 - **Charsets** beyond UTF-8 / US-ASCII / ISO-8859-1 in encoded-words are passed
   through byte-for-byte rather than transcoded (no data loss).
-- **Delivery** (SMTP/IMAP/POP) is intentionally a host seam, not implemented here.
 
 ## License
 
